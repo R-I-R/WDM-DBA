@@ -9,8 +9,10 @@ class TCont(Enum):
 
 
 class Packet:
-    def __init__(self, size:int):
+    def __init__(self, size:int, arrival_time:int):
         self.size:int = size
+        self.arrival_time:int = arrival_time
+        self.transmitted: bool = False  # Add this line
         
 class ONU:
     def __init__(self, onu_id, buffer_size, max_bw, proportions: dict[TCont,float] | None = None):
@@ -24,6 +26,9 @@ class ONU:
         self.HCT: dict[TCont,list[int]] = {1: [], 2: [], 3: [], 4: []}
         self.avg_HCT: dict[TCont,float] = {1: 0, 2: 0, 3: 0, 4: 0}
         self.queue: dict[TCont,list[Packet]] = {1: [], 2: [], 3: [], 4: []}
+        self.total_latency: float = 0
+        self.packets_transmitted: int = 0
+        self.max_allocated_bw: float = 0
         
     def update_HCT(self):
         for t in TCont:
@@ -43,13 +48,15 @@ class ONU:
         return RT
 
 class DBA_Simulator:
-    def __init__(self, ONUS: list[ONU], groups: list[list[str]]):
+    def __init__(self, ONUS: list[ONU], groups: list[list[str]], Tm: float):
         self.N: int = len(ONUS)  # number of ONUs
         self.groups: list[list[str]] = groups
+        self.Tm: float = Tm
         # self.num_groups = num_groups
         self.ONUs: dict[str,ONU] = {}
         for onu in ONUS:
             self.ONUs[onu.onu_id] = onu
+        self.current_time: int = 0
 
     def traffic_generator(self):
         # For each ONU
@@ -74,7 +81,8 @@ class DBA_Simulator:
                 t = t.value
                 for _ in range(num_packets_per_TCont[t]):
                     pkt_size = random.randint(1, onu.max_bw*10)/1000
-                    self.ONUs[onu_id].queue[t].append(Packet(pkt_size))
+                    packet = Packet(pkt_size, self.current_time)
+                    self.ONUs[onu_id].queue[t].append(packet)
 
     def DBA(self):
         allocations: dict[str,dict[TCont,float]] = {}
@@ -159,27 +167,31 @@ class DBA_Simulator:
                 allocations[onu_id] = group_FT[onu_id]
         return allocations
 
-    def remove_transmitted(self, allocations: dict[str,dict[int,float]]):
-        for onu_id, allocation in allocations.items():
-            onu = self.ONUs[onu_id]
-            for t in [2,3,4]:
-                allocated_bw = allocation[t]
-                remaining_alloc = allocated_bw
-                
-                while onu.queue[t] and remaining_alloc > 0:
-                    pkt = onu.queue[t][0]
-                    if remaining_alloc >= pkt.size:
-                        remaining_alloc -= pkt.size
-                        onu.queue[t].pop(0)
-                    else:
-                        onu.queue[t][0].size -= remaining_alloc
-                        remaining_alloc = 0
-                        break
-
     def simulate_cycle(self):
+        self.current_time += 1
         self.traffic_generator()
         allocations = self.DBA()
-        # self.remove_transmitted(allocations)
+        
+        # For each ONU, process transmitted packets based on allocated bandwidth
+        for onu_id, allocation in allocations.items():
+            onu = self.ONUs[onu_id]
+            for t in TCont:
+                t_value = t.value
+                bw_allocated = allocation.get(t_value, 0)
+                transmitted_data = 0
+                for packet in onu.queue[t_value]:
+                    if not packet.transmitted and transmitted_data + packet.size <= bw_allocated:
+                        transmitted_data += packet.size
+                        latency = packet.size / bw_allocated
+                        onu.total_latency += latency
+                        onu.packets_transmitted += 1
+                        packet.transmitted = True  # Mark packet as transmitted
+                    if transmitted_data >= bw_allocated:
+                        break
+        
+                total_allocated_bw = sum(allocation.values())
+                if total_allocated_bw > onu.max_allocated_bw:
+                    onu.max_allocated_bw = total_allocated_bw
         return allocations
 
 
@@ -197,9 +209,11 @@ def simulate():
         ONU("ONU8", 10, 1.244e9, {1:0, 2:0.8, 3:0.2, 4:0})
     ]
     
+    Tm = 0.025 # 25 ms margin time
+    
     groups = [["ONU1", "ONU2"], ["ONU3", "ONU4"], ["ONU5", "ONU6"], ["ONU7", "ONU8"]]
     
-    simulator = DBA_Simulator(ONUS, groups)
+    simulator = DBA_Simulator(ONUS, groups, Tm)
 
     print("Simulation for traffic proportions 60% T-Cont 2, 20% T-Cont 3, 20% T-Cont 4\n")
     for cycle in range(10):
@@ -208,6 +222,11 @@ def simulate():
         for onu_id, allocation in allocations.items():
             print(f"ONU {onu_id}: FT1: {allocation[1]:.2f}, FT2: {allocation[2]:.2f}, FT3: {allocation[3]:.2f}, FT4: {allocation[4]:.2f}")
         print("\n")
+    # After simulation, output latency and max transfer rate
+    print("Latency and Max Transfer Rate per ONU:")
+    for onu_id, onu in simulator.ONUs.items():
+        avg_latency = (onu.total_latency / onu.packets_transmitted) if onu.packets_transmitted > 0 else 0
+        print(f"ONU {onu_id}: Average Latency: {avg_latency:.2f}, Max Transfer Rate: {onu.max_allocated_bw:.2f}")
 
         
 if __name__ == "__main__":

@@ -23,7 +23,8 @@ class UploadSimulation(QThread):
         
         self.dba_simulator = DBA_Simulator(
             ONUS=ONUs,
-            groups=[self.onu_ids]
+            groups=[self.onu_ids],
+            Tm=0.0025
         )
 
     def run(self):
@@ -45,7 +46,7 @@ class UploadSimulation(QThread):
 
     def export_history(self, file_path):
         with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = ['iteration', 'onu ID', 'FT1', 'FT2', 'FT3', 'FT4', 'FTtotal', 'BWexcess']
+            fieldnames = ['iteration', 'onu ID', 'FT1', 'FT2', 'FT3', 'FT4', 'FTtotal', 'BWexcess', 'Avg Latency', 'Max Transfer Rate']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=';')
             writer.writeheader()
             
@@ -56,6 +57,9 @@ class UploadSimulation(QThread):
                     ft3 = alloc.get(3, 0)
                     ft4 = alloc.get(4, 0)
                     fttotal = ft1 + ft2 + ft3 + ft4
+                    onu = self.dba_simulator.ONUs[onu_id]
+                    avg_latency = (onu.total_latency / onu.packets_transmitted) if onu.packets_transmitted > 0 else 0
+                    max_transfer_rate = onu.max_allocated_bw
                     writer.writerow({
                         'iteration': iteration,
                         'onu ID': onu_id,
@@ -64,5 +68,7 @@ class UploadSimulation(QThread):
                         'FT3': ft3,
                         'FT4': ft4,
                         'FTtotal': fttotal,
-                        'BWexcess': self.components[onu_id].bandwidth - fttotal if fttotal < self.components[onu_id].bandwidth else 0
+                        'BWexcess': self.components[onu_id].bandwidth - fttotal if fttotal < self.components[onu_id].bandwidth else 0,
+                        'Avg Latency': avg_latency,
+                        'Max Transfer Rate': max_transfer_rate
                     })
